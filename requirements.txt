@@ -1,0 +1,7 @@
+qiskit
+qiskit-aer
+qiskit-nature
+numpy
+matplotlib
+pandas
+scipy
