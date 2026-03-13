@@ -1,96 +1,60 @@
 # src/simulator.py
-# Handles energy measurement and VQE simulation
-
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp, Statevector
-from qiskit_aer import AerSimulator
-from qiskit import transpile
+from scipy.optimize import minimize
 
 
-# --- H2 Hamiltonian (hardcoded at equilibrium bond length 0.735 Angstrom) ---
-# Derived from STO-3G basis set, Jordan-Wigner mapping, qubit reduction
-# H = h0*II + h1*ZZ + h2*XX + h3*YY + h4*ZI + h5*IZ
+# Verified H2 Hamiltonian — STO-3G, Jordan-Wigner mapping
+# True ground state eigenvalue = -1.137274 Ha
 H2_HAMILTONIAN = SparsePauliOp.from_list([
-    ("II", -1.0523732),
-    ("ZZ",  0.39793742),
-    ("XX", -0.39793742),
-    ("YY", -0.01128010),
-    ("ZI", -0.39793742),
-    ("IZ",  0.39793742),
+    ("II", -0.580295),
+    ("ZI", -0.22575),
+    ("IZ",  0.17407),
+    ("ZZ",  0.12091),
+    ("XX",  0.17407),
 ])
 
 
 def get_hamiltonian(bond_length=0.735):
     """
-    Returns H2 Hamiltonian coefficients for a given bond length.
-    We interpolate coefficients to simulate different bond lengths.
-    
-    At equilibrium (0.735A): ground state energy ~ -1.137 Hartree
-    As bond length increases: energy increases (molecule dissociates)
-    
-    Args:
-        bond_length: H-H distance in Angstroms
-    Returns:
-        SparsePauliOp Hamiltonian
+    H2 Hamiltonian scaled for different bond lengths.
+    Uses physically motivated scaling of each coefficient.
     """
-    # Scale coefficients based on bond length deviation from equilibrium
-    # This is a simplified model — real VQE would recompute integrals
-    scale = np.exp(-0.5 * (bond_length - 0.735)**2 / 0.3**2)
-    
+    r = bond_length
+    r0 = 0.735
+
+    # Nuclear repulsion increases as bond shortens
+    nuclear = 0.7199 / r
+
+    # Electronic integrals scale with overlap
+    overlap = np.exp(-0.5 * abs(r - r0))
+
     hamiltonian = SparsePauliOp.from_list([
-        ("II", -1.0523732 * (0.5 + 0.5 * scale)),
-        ("ZZ",  0.39793742 * scale),
-        ("XX", -0.39793742 * scale),
-        ("YY", -0.01128010 * scale),
-        ("ZI", -0.39793742 * scale),
-        ("IZ",  0.39793742 * scale),
+        ("II", -1.05237325 * overlap + nuclear - 0.7199/r0),
+        ("IZ",  0.39793742 * overlap),
+        ("ZI", -0.39793742 * overlap),
+        ("ZZ", -0.01128010 * overlap),
+        ("XX",  0.18093120 * overlap),
     ])
     return hamiltonian
 
 
 def compute_energy(circuit, hamiltonian, parameter_values):
-    """
-    Computes energy expectation value <ψ(θ)|H|ψ(θ)>
-    Uses statevector simulation for exact results.
-    
-    Args:
-        circuit: parameterized ansatz QuantumCircuit
-        hamiltonian: SparsePauliOp
-        parameter_values: list of floats for circuit parameters
-    Returns:
-        energy: float (in Hartree)
-    """
-    # Bind parameters to circuit
+    """Computes <ψ(θ)|H|ψ(θ)> using statevector."""
     param_dict = dict(zip(circuit.parameters, parameter_values))
     bound_circuit = circuit.assign_parameters(param_dict)
-    
-    # Get statevector
     statevector = Statevector(bound_circuit)
-    
-    # Compute expectation value
     energy = statevector.expectation_value(hamiltonian).real
     return energy
 
 
-def run_vqe(circuit, hamiltonian, initial_params=None, max_iter=200):
-    """
-    Runs the VQE optimization loop.
-    Uses COBYLA optimizer to minimize energy.
-    
-    Args:
-        circuit: parameterized ansatz
-        hamiltonian: SparsePauliOp
-        initial_params: starting parameter values (random if None)
-        max_iter: maximum optimizer iterations
-    Returns:
-        result dict with optimal energy, params, and convergence history
-    """
-    from scipy.optimize import minimize
-    
+def run_vqe(circuit, hamiltonian, initial_params=None, max_iter=300):
+    """Runs VQE with COBYLA optimizer."""
     n_params = circuit.num_parameters
     if initial_params is None:
-        initial_params = np.random.uniform(-np.pi, np.pi, n_params)
-    
+        np.random.seed(42)
+        initial_params = np.random.uniform(0, np.pi, n_params)
+
     energy_history = []
     iteration = [0]
 
@@ -107,7 +71,7 @@ def run_vqe(circuit, hamiltonian, initial_params=None, max_iter=200):
         cost_function,
         initial_params,
         method='COBYLA',
-        options={'maxiter': max_iter, 'rhobeg': 0.5}
+        options={'maxiter': max_iter, 'rhobeg': 0.3}
     )
 
     return {
